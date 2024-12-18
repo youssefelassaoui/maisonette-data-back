@@ -2,18 +2,23 @@ package gep.ma.maisonette_data_back.Controllers;
 
 import gep.ma.maisonette_data_back.Models.User;
 import gep.ma.maisonette_data_back.Repos.UserRepository;
+import gep.ma.maisonette_data_back.Services.JwtService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/auth")
 public class AuthController {
+
+    @Autowired
+    private JwtService jwtService;
 
     @Autowired
     private UserRepository userRepository;
@@ -23,18 +28,16 @@ public class AuthController {
 
     @PostMapping("/register")
     public ResponseEntity<?> registerUser(@RequestBody User user) {
-        // Vérifier si l'email existe déjà
-        Optional<User> existingUser = userRepository.findByEmail(user.getEmail());
-        if (existingUser.isPresent()) {
-            return ResponseEntity.badRequest().body("Cet email est déjà enregistré.");
+        if (!user.getEmail().endsWith("@greenenergypark.ma")) {
+            return ResponseEntity.badRequest().body("Seuls les emails @greenenergypark.ma sont autorisés.");
         }
 
-        // Générer un ID unique et un token de confirmation
+        // Générer un ID unique et un token
         user.setId(UUID.randomUUID());
         user.setToken(UUID.randomUUID().toString());
         user.setVerified(false);
 
-        // Sauvegarder l'utilisateur dans la base de données
+        // Sauvegarder l'utilisateur
         userRepository.save(user);
 
         // Envoyer l'email de confirmation
@@ -42,9 +45,8 @@ public class AuthController {
         sendEmail(user.getEmail(), "Confirmation de votre compte",
                 "Cliquez sur le lien pour confirmer votre email : " + confirmationLink);
 
-        return ResponseEntity.ok("Un email de confirmation a été envoyé.");
+        return ResponseEntity.ok("Un email de confirmation a été envoyé à " + user.getEmail());
     }
-
 
     /**
      * Endpoint pour valider l'email de l'utilisateur
@@ -55,13 +57,32 @@ public class AuthController {
 
         if (optionalUser.isPresent()) {
             User user = optionalUser.get();
-            user.setVerified(true); // Met à jour le statut à true
-            userRepository.save(user); // Enregistre la mise à jour
-            return ResponseEntity.ok("Email confirmé avec succès !");
+            user.setVerified(true);
+            userRepository.save(user);
+
+            // Extraire le nom de l'email
+            String email = user.getEmail();
+            String username = email.split("@")[0]; // Prend la partie avant '@'
+
+            // Générer un token JWT
+            String jwtToken = jwtService.generateToken(email);
+
+            // Rediriger avec les informations dans l'URL
+            String redirectUrl = "http://localhost:3000/login?verified=true&token=" + jwtToken + "&username=" + username;
+
+            // HTTP 302 redirection
+            return ResponseEntity.status(302)
+                    .header("Location", redirectUrl)
+                    .build();
         } else {
-            return ResponseEntity.badRequest().body("Token invalide ou expiré.");
+            // Redirection en cas d'erreur
+            String errorRedirect = "http://localhost:3000/login?verified=false";
+            return ResponseEntity.status(302)
+                    .header("Location", errorRedirect)
+                    .build();
         }
     }
+
 
 
     /**
@@ -74,14 +95,13 @@ public class AuthController {
         if (optionalUser.isPresent()) {
             User user = optionalUser.get();
 
-            // Vérifier si l'email est confirmé
             if (!user.isVerified()) {
                 return ResponseEntity.badRequest().body("Veuillez confirmer votre email avant de vous connecter.");
             }
 
-            // Vérifier le mot de passe
             if (user.getPassword().equals(loginRequest.getPassword())) {
-                return ResponseEntity.ok("Connexion réussie pour : " + user.getEmail());
+                String jwtToken = jwtService.generateToken(user.getEmail());
+                return ResponseEntity.ok(Map.of("token", jwtToken, "message", "Connexion réussie"));
             } else {
                 return ResponseEntity.badRequest().body("Mot de passe incorrect.");
             }
@@ -89,6 +109,8 @@ public class AuthController {
             return ResponseEntity.badRequest().body("Utilisateur non trouvé.");
         }
     }
+
+
 
     /**
      * Méthode privée pour envoyer un email via JavaMailSender
